@@ -1,0 +1,6 @@
+{
+  "name": "VISION",
+  "description": "Personal life management, productivity, alarm scheduling, focus control, analytics, and ALFRED AI personal assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
