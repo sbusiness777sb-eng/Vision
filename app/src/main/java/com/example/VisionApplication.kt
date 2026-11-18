@@ -56,6 +56,7 @@ class VisionApplication : Application() {
                     focusController = focusController
                 )
                 alarmScheduler.rescheduleAllEnabledAlarms()
+                focusController.resumeIfActive()
                 VisionScheduleWorker.enqueuePeriodic(this@VisionApplication)
             }.onFailure {
                 Log.e("VisionApplication", "Startup initialization failed", it)

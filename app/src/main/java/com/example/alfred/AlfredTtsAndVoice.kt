@@ -2,10 +2,7 @@ package com.example.alfred
 
 import android.content.Context
 import android.content.Intent
-import android.os.Bundle
-import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -88,91 +85,23 @@ class AlfredTtsEngine(
     }
 }
 
-class AlfredSpeechController(
-    private val context: Context,
-    private val onPartialText: (String) -> Unit,
-    private val onFinalText: (String) -> Unit,
-    private val onError: (String) -> Unit,
-    private val onListeningStopped: () -> Unit
-) {
-    private var recognizer: SpeechRecognizer? = null
-
-    fun isAvailable(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
-
-    fun startListening(preferOffline: Boolean) {
-        if (!isAvailable()) {
-            onError("Speech recognition service is not installed on this device. You can type commands below.")
-            return
-        }
-        stopListening()
-        try {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) {}
-                    override fun onBeginningOfSpeech() {}
-                    override fun onRmsChanged(rmsdB: Float) {}
-                    override fun onBufferReceived(buffer: ByteArray?) {}
-                    override fun onEndOfSpeech() {
-                        onListeningStopped()
-                    }
-
-                    override fun onError(error: Int) {
-                        val message = when (error) {
-                            SpeechRecognizer.ERROR_AUDIO -> "Audio recording error."
-                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is required."
-                            SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
-                                "Speech recognition network unavailable; check offline language pack."
-                            SpeechRecognizer.ERROR_NO_MATCH -> "I didn't catch that. Please try speaking again."
-                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech detected."
-                            else -> "Voice input unavailable (code $error). You can type your command."
-                        }
-                        onListeningStopped()
-                        onError(message)
-                    }
-
-                    override fun onResults(results: Bundle?) {
-                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        val best = matches?.firstOrNull()?.trim()
-                        onListeningStopped()
-                        if (!best.isNullOrBlank()) {
-                            onFinalText(best)
-                        } else {
-                            onError("Could not recognize speech.")
-                        }
-                    }
-
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        val partial = partialResults
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                        if (!partial.isNullOrBlank()) {
-                            onPartialText(partial)
-                        }
-                    }
-
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
-                })
-            }
-
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
-            }
-            recognizer?.startListening(intent)
-        } catch (e: Exception) {
-            Log.e("AlfredSpeech", "Failed to start listening", e)
-            onListeningStopped()
-            onError("Unable to start microphone input: ${e.localizedMessage}")
+/**
+ * Zero-permission system speech recognition helper.
+ * Delegates microphone capture to the OS speech recognition activity via
+ * RecognizerIntent.ACTION_RECOGNIZE_SPEECH so VISION never requests RECORD_AUDIO.
+ */
+object AlfredSpeechIntentHelper {
+    fun createRecognizeSpeechIntent(preferOffline: Boolean): Intent {
+        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak a command to ALFRED")
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
         }
     }
 
-    fun stopListening() {
-        runCatching {
-            recognizer?.stopListening()
-            recognizer?.destroy()
-        }
-        recognizer = null
+    fun isAvailable(context: Context): Boolean {
+        val intent = createRecognizeSpeechIntent(preferOffline = false)
+        return intent.resolveActivity(context.packageManager) != null
     }
 }

@@ -93,29 +93,6 @@ class AlfredAssistantEngine(
         )
     }
 
-    private val speechController = AlfredSpeechController(
-        context = context,
-        onPartialText = { partial ->
-            _uiState.value = _uiState.value.copy(partialTranscript = partial)
-        },
-        onFinalText = { finalText ->
-            _uiState.value = _uiState.value.copy(partialTranscript = "")
-            submitCommand(finalText)
-        },
-        onError = { msg ->
-            _uiState.value = _uiState.value.copy(
-                status = AlfredAssistantStatus.ERROR,
-                errorMessage = msg,
-                statusHeadline = msg
-            )
-        },
-        onListeningStopped = {
-            if (_uiState.value.status == AlfredAssistantStatus.LISTENING) {
-                _uiState.value = _uiState.value.copy(status = AlfredAssistantStatus.IDLE)
-            }
-        }
-    )
-
     private val actionSchema = Schema.obj(
         properties = mapOf(
             "replyText" to Schema.string(description = "Polite, concise ALFRED butler response addressing the user as Master."),
@@ -168,7 +145,7 @@ class AlfredAssistantEngine(
     init {
         _uiState.value = _uiState.value.copy(
             isOnline = checkNetworkOnline(),
-            isVoiceInputAvailable = speechController.isAvailable()
+            isVoiceInputAvailable = AlfredSpeechIntentHelper.isAvailable(context)
         )
         scope.launch {
             AlfredEventBus.announcements.collect { announcement ->
@@ -177,22 +154,37 @@ class AlfredAssistantEngine(
         }
     }
 
-    fun startVoiceInput() {
-        val online = checkNetworkOnline()
+    fun onVoiceListeningStarted() {
         _uiState.value = _uiState.value.copy(
             status = AlfredAssistantStatus.LISTENING,
             partialTranscript = "",
             errorMessage = null,
-            isOnline = online,
-            statusHeadline = "Listening..."
+            isOnline = checkNetworkOnline(),
+            statusHeadline = "Listening via system voice input..."
         )
-        speechController.startListening(preferOffline = !online)
     }
 
-    fun stopVoiceInput() {
-        speechController.stopListening()
-        if (_uiState.value.status == AlfredAssistantStatus.LISTENING) {
+    fun onVoiceTranscript(transcript: String) {
+        _uiState.value = _uiState.value.copy(partialTranscript = "")
+        if (transcript.isNotBlank()) {
+            submitCommand(transcript)
+        } else {
             _uiState.value = _uiState.value.copy(status = AlfredAssistantStatus.IDLE)
+        }
+    }
+
+    fun onVoiceCancelledOrError(message: String?) {
+        if (message.isNullOrBlank()) {
+            _uiState.value = _uiState.value.copy(
+                status = AlfredAssistantStatus.IDLE,
+                statusHeadline = "Standing by to manage your day, Master."
+            )
+        } else {
+            _uiState.value = _uiState.value.copy(
+                status = AlfredAssistantStatus.ERROR,
+                errorMessage = message,
+                statusHeadline = message
+            )
         }
     }
 
@@ -474,7 +466,6 @@ class AlfredAssistantEngine(
     }
 
     fun release() {
-        speechController.stopListening()
         ttsEngine.release()
     }
 }

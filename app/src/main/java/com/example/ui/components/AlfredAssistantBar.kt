@@ -1,9 +1,5 @@
 package com.example.ui.components
 
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -58,13 +54,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import com.example.alfred.AlfredAssistantStatus
 import com.example.alfred.AlfredUiState
 import com.example.data.local.AlfredLogEntity
@@ -85,20 +79,6 @@ fun AlfredAssistantBar(
     onExpandSheet: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    var pendingMicAfterGrant by remember { mutableStateOf(false) }
-
-    val micPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted && pendingMicAfterGrant) {
-            pendingMicAfterGrant = false
-            onMicTap()
-        } else {
-            pendingMicAfterGrant = false
-        }
-    }
-
     val infiniteTransition = rememberInfiniteTransition(label = "alfred_pulse")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 1f,
@@ -238,16 +218,7 @@ fun AlfredAssistantBar(
                         ) {
                             onStopVoiceOrSpeech()
                         } else {
-                            val hasMic = ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.RECORD_AUDIO
-                            ) == PackageManager.PERMISSION_GRANTED
-                            if (hasMic) {
-                                onMicTap()
-                            } else {
-                                pendingMicAfterGrant = true
-                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            }
+                            onMicTap()
                         }
                     }
                     .testTag("alfred_mic_button"),

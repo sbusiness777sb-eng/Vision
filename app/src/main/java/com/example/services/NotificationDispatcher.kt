@@ -161,10 +161,10 @@ class NotificationDispatcher(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = Intent(context, FocusMonitorService::class.java).apply {
-            action = FocusMonitorService.ACTION_STOP_FOCUS
+        val stopIntent = Intent(context, FocusActionReceiver::class.java).apply {
+            action = FocusActionReceiver.ACTION_STOP_FOCUS
         }
-        val stopPending = PendingIntent.getService(
+        val stopPending = PendingIntent.getBroadcast(
             context,
             5002,
             stopIntent,

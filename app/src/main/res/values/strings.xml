@@ -1,5 +1,3 @@
 <resources>
     <string name="app_name">VISION</string>
-    <string name="accessibility_service_description">Monitors active foreground apps during Focus Mode and Study Mode to issue distraction warnings and apply user-configured focus shields.</string>
-    <string name="accessibility_service_label">VISION Focus Guard</string>
 </resources>

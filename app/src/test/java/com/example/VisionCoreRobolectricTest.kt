@@ -143,4 +143,22 @@ class VisionCoreRobolectricTest {
         assertEquals("report", reportOutcome.navigateToRoute)
         assertTrue(reportOutcome.replyText.contains("1 of 1"))
     }
+
+    @Test
+    fun `focus controller seeds curated apps adds custom apps and tracks session lifecycle`() = runTest {
+        focusController.refreshInstalledApps()
+        focusController.addCustomDistractingApp("Twitch", 25)
+        val apps = focusController.observeDistractingApps().first()
+        assertTrue(apps.any { it.appName == "YouTube" && it.isYouTubeSpecial })
+        assertTrue(apps.any { it.appName == "Twitch" && it.dailyLimitMinutes == 25 })
+
+        focusController.startFocusSession(durationMinutes = 30, studyMode = true)
+        val sessionsRunning = focusController.observeFocusSessions().first()
+        assertEquals(1, sessionsRunning.size)
+        assertTrue(sessionsRunning.first().isStudyMode)
+
+        focusController.stopFocusSession(completedNormally = false)
+        val sessionsStopped = focusController.observeFocusSessions().first()
+        assertEquals("CANCELLED", sessionsStopped.first().status.name)
+    }
 }

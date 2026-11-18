@@ -1,7 +1,6 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
-import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.VisionApplication
@@ -25,7 +24,6 @@ import com.example.data.local.TaskCategory
 import com.example.data.local.TaskEntity
 import com.example.data.local.TaskPriority
 import com.example.data.preferences.VisionSettings
-import com.example.services.FocusMonitorService
 import com.example.ui.theme.VisionTab
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -109,9 +107,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             SharingStarted.WhileSubscribed(5000),
             WeeklyProductivityReport(emptyList(), 0, 0, 0, 0, 0)
         )
-
-    private val _appUsageMinutes = MutableStateFlow<Map<String, Int>>(emptyMap())
-    val appUsageMinutes: StateFlow<Map<String, Int>> = _appUsageMinutes.asStateFlow()
 
     fun selectTab(tab: VisionTab) {
         _selectedTab.value = tab
@@ -243,10 +238,15 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // --- Distraction & Focus Actions ---
-    fun refreshInstalledAppsAndUsage() {
+    fun refreshCuratedApps() {
         viewModelScope.launch {
             focusController.refreshInstalledApps()
-            _appUsageMinutes.value = focusController.queryTodayAppUsageMinutes()
+        }
+    }
+
+    fun addCustomDistractingApp(appName: String, dailyLimitMinutes: Int = 30) {
+        viewModelScope.launch {
+            focusController.addCustomDistractingApp(appName, dailyLimitMinutes)
         }
     }
 
@@ -293,21 +293,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun triggerStudyWarningCheck(appName: String, isYouTube: Boolean) {
-        val intent = Intent(app, FocusMonitorService::class.java).apply {
-            action = FocusMonitorService.ACTION_SIMULATE_DISTRACTION
-            putExtra(FocusMonitorService.EXTRA_APP_NAME, appName)
-            putExtra(FocusMonitorService.EXTRA_IS_YOUTUBE, isYouTube)
+        viewModelScope.launch {
+            focusController.triggerStudyWarningCheck(appName, isYouTube)
         }
-        runCatching { app.startService(intent) }
     }
 
-    fun hasUsageAccess(): Boolean = focusController.hasUsageAccessPermission()
-    fun isAccessibilityEnabled(): Boolean = focusController.isAccessibilityGuardEnabled()
-
     // --- ALFRED Actions ---
-    fun startVoiceCommand() = alfredEngine.startVoiceInput()
+    fun onVoiceListeningStarted() = alfredEngine.onVoiceListeningStarted()
+    fun onVoiceTranscript(transcript: String) = alfredEngine.onVoiceTranscript(transcript)
+    fun onVoiceCancelledOrError(message: String?) = alfredEngine.onVoiceCancelledOrError(message)
     fun stopVoiceOrSpeech() {
-        alfredEngine.stopVoiceInput()
+        alfredEngine.onVoiceCancelledOrError(null)
         alfredEngine.stopSpeaking()
     }
     fun sendTextCommandToAlfred(cmd: String) = alfredEngine.submitCommand(cmd)

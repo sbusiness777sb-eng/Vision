@@ -1,6 +1,10 @@
 package com.example.ui
 
+import android.app.Activity
+import android.speech.RecognizerIntent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -35,11 +39,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.alfred.AlfredSpeechIntentHelper
 import com.example.ui.components.AlfredCommandSheet
 import com.example.ui.screens.AlarmScreen
 import com.example.ui.screens.DashboardScreen
@@ -66,11 +72,41 @@ fun VisionAppShell(viewModel: VisionViewModel) {
     val focusRuntime by viewModel.focusRuntime.collectAsStateWithLifecycle()
     val dailyReport by viewModel.dailyReport.collectAsStateWithLifecycle()
     val weeklyReport by viewModel.weeklyReport.collectAsStateWithLifecycle()
-    val appUsageMinutes by viewModel.appUsageMinutes.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val alfredState by viewModel.alfredState.collectAsStateWithLifecycle()
     val alfredLogs by viewModel.alfredLogs.collectAsStateWithLifecycle()
 
     var showAlfredSheet by remember { mutableStateOf(false) }
+
+    val voiceInputLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            val transcript = matches?.firstOrNull()?.trim().orEmpty()
+            if (transcript.isNotBlank()) {
+                viewModel.onVoiceTranscript(transcript)
+            } else {
+                viewModel.onVoiceCancelledOrError("No speech recognized. Please try again or type below.")
+            }
+        } else {
+            viewModel.onVoiceCancelledOrError(null)
+        }
+    }
+
+    val launchSystemVoiceInput: () -> Unit = {
+        if (AlfredSpeechIntentHelper.isAvailable(context)) {
+            viewModel.onVoiceListeningStarted()
+            val intent = AlfredSpeechIntentHelper.createRecognizeSpeechIntent(
+                preferOffline = !alfredState.isOnline
+            )
+            runCatching { voiceInputLauncher.launch(intent) }.onFailure {
+                viewModel.onVoiceCancelledOrError("Unable to open system voice input. You can type commands below.")
+            }
+        } else {
+            viewModel.onVoiceCancelledOrError("Voice input service is unavailable on this device. You can type commands below.")
+        }
+    }
 
     // Back gesture returns from secondary tabs to Dashboard
     BackHandler(enabled = selectedTab != VisionTab.DASHBOARD) {
@@ -166,7 +202,7 @@ fun VisionAppShell(viewModel: VisionViewModel) {
                                     routines = routines,
                                     dailyReport = dailyReport,
                                     alfredState = alfredState,
-                                    onMicTap = { viewModel.startVoiceCommand() },
+                                    onMicTap = launchSystemVoiceInput,
                                     onStopVoiceOrSpeech = { viewModel.stopVoiceOrSpeech() },
                                     onSpeakBriefing = { viewModel.speakAlfredBriefing() },
                                     onOpenAlfredSheet = { showAlfredSheet = true },
@@ -189,7 +225,7 @@ fun VisionAppShell(viewModel: VisionViewModel) {
                                     settings = settings,
                                     canScheduleExactAlarms = viewModel.canScheduleExactAlarms(),
                                     alfredState = alfredState,
-                                    onMicTap = { viewModel.startVoiceCommand() },
+                                    onMicTap = launchSystemVoiceInput,
                                     onStopVoiceOrSpeech = { viewModel.stopVoiceOrSpeech() },
                                     onSpeakBriefing = { viewModel.speakAlfredBriefing() },
                                     onOpenAlfredSheet = { showAlfredSheet = true },
@@ -207,15 +243,13 @@ fun VisionAppShell(viewModel: VisionViewModel) {
                                     distractingApps = distractingApps,
                                     focusSessions = focusSessions,
                                     dailyStats = dailyStats,
-                                    appUsageMinutes = appUsageMinutes,
-                                    hasUsageAccess = viewModel.hasUsageAccess(),
-                                    isAccessibilityEnabled = viewModel.isAccessibilityEnabled(),
                                     alfredState = alfredState,
-                                    onMicTap = { viewModel.startVoiceCommand() },
+                                    onMicTap = launchSystemVoiceInput,
                                     onStopVoiceOrSpeech = { viewModel.stopVoiceOrSpeech() },
                                     onSpeakBriefing = { viewModel.speakAlfredBriefing() },
                                     onOpenAlfredSheet = { showAlfredSheet = true },
-                                    onRefreshApps = viewModel::refreshInstalledAppsAndUsage,
+                                    onRefreshApps = viewModel::refreshCuratedApps,
+                                    onAddCustomApp = viewModel::addCustomDistractingApp,
                                     onToggleAppSelected = viewModel::toggleAppBlocked,
                                     onSetStudyMode = viewModel::setStudyMode,
                                     onSetGraceSeconds = viewModel::setStudyGraceSeconds,
@@ -232,7 +266,7 @@ fun VisionAppShell(viewModel: VisionViewModel) {
                                     weeklyReport = weeklyReport,
                                     pendingTasks = pendingTasks,
                                     alfredState = alfredState,
-                                    onMicTap = { viewModel.startVoiceCommand() },
+                                    onMicTap = launchSystemVoiceInput,
                                     onStopVoiceOrSpeech = { viewModel.stopVoiceOrSpeech() },
                                     onSpeakBriefing = { viewModel.speakAlfredBriefing() },
                                     onOpenAlfredSheet = { showAlfredSheet = true },
@@ -253,7 +287,7 @@ fun VisionAppShell(viewModel: VisionViewModel) {
                     logs = alfredLogs,
                     onDismiss = { showAlfredSheet = false },
                     onSendCommand = viewModel::sendTextCommandToAlfred,
-                    onMicTap = viewModel::startVoiceCommand,
+                    onMicTap = launchSystemVoiceInput,
                     onSpeakBriefing = viewModel::speakAlfredBriefing
                 )
             }

@@ -120,10 +120,10 @@ class FocusShieldActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedButton(
                         onClick = {
-                            val stopIntent = Intent(this@FocusShieldActivity, FocusMonitorService::class.java).apply {
-                                action = FocusMonitorService.ACTION_STOP_FOCUS
+                            val stopIntent = Intent(this@FocusShieldActivity, FocusActionReceiver::class.java).apply {
+                                action = FocusActionReceiver.ACTION_STOP_FOCUS
                             }
-                            startService(stopIntent)
+                            sendBroadcast(stopIntent)
                             finish()
                         },
                         modifier = Modifier

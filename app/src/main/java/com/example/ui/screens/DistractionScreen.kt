@@ -1,11 +1,13 @@
 package com.example.ui.screens
 
-import android.content.Intent
-import android.provider.Settings
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -20,12 +22,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -35,16 +39,19 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -55,6 +62,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.alfred.AlfredUiState
 import com.example.core.services.FocusRuntimeSnapshot
 import com.example.core.util.DateUtil
@@ -75,15 +83,13 @@ fun DistractionScreen(
     distractingApps: List<DistractingAppEntity>,
     focusSessions: List<FocusSessionEntity>,
     dailyStats: List<DailyStatEntity>,
-    appUsageMinutes: Map<String, Int>,
-    hasUsageAccess: Boolean,
-    isAccessibilityEnabled: Boolean,
     alfredState: AlfredUiState,
     onMicTap: () -> Unit,
     onStopVoiceOrSpeech: () -> Unit,
     onSpeakBriefing: () -> Unit,
     onOpenAlfredSheet: () -> Unit,
     onRefreshApps: () -> Unit,
+    onAddCustomApp: (String, Int) -> Unit,
     onToggleAppSelected: (String, Boolean) -> Unit,
     onSetStudyMode: (Boolean) -> Unit,
     onSetGraceSeconds: (Int) -> Unit,
@@ -96,6 +102,22 @@ fun DistractionScreen(
 ) {
     val context = LocalContext.current
     var selectedDuration by remember { mutableIntStateOf(25) }
+    var showAddAppDialog by remember { mutableStateOf(false) }
+
+    var hasNotifPermission by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+            } else true
+        )
+    }
+
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotifPermission = granted
+    }
 
     LaunchedEffect(Unit) {
         onRefreshApps()
@@ -134,7 +156,7 @@ fun DistractionScreen(
                 ) {
                     Icon(
                         Icons.Default.Refresh,
-                        contentDescription = "Refresh app usage",
+                        contentDescription = "Refresh focus list",
                         tint = VisionColors.DistractionPrimary
                     )
                 }
@@ -331,7 +353,7 @@ fun DistractionScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "YouTube is allowed during Study Mode for lectures & tutorials. Prolonged distracting usage issues a warning and starts a ${settings.studyGracePeriodSeconds}s grace period before Focus Shield activates.",
+                                text = "YouTube is allowed during Study Mode for lectures & tutorials. Distraction checks issue a warning and start a ${settings.studyGracePeriodSeconds}s grace period before Focus Shield activates.",
                                 fontSize = 12.sp,
                                 color = VisionColors.DistractionOnSurface
                             )
@@ -340,7 +362,7 @@ fun DistractionScreen(
 
                     Column {
                         Text(
-                            text = "Grace Period Before Restriction: ${settings.studyGracePeriodSeconds}s",
+                            text = "Grace Period Before Shield: ${settings.studyGracePeriodSeconds}s",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = VisionColors.DistractionOnSurface
@@ -363,7 +385,7 @@ fun DistractionScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                "Verify YouTube Study Warning & Grace Timer",
+                                "Test YouTube Study Warning & Grace Timer",
                                 color = VisionColors.DistractionPrimary,
                                 fontSize = 12.sp
                             )
@@ -373,7 +395,7 @@ fun DistractionScreen(
             }
         }
 
-        // Permissions & Consent Status (UsageStatsManager + AccessibilityService)
+        // Privacy-First Focus Notifications Card
         item {
             Surface(
                 color = VisionColors.DistractionSurface,
@@ -383,73 +405,54 @@ fun DistractionScreen(
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Shield, contentDescription = "Permissions", tint = VisionColors.DistractionPrimary)
+                        Icon(Icons.Default.Shield, contentDescription = "Privacy-first focus guard", tint = VisionColors.DistractionPrimary)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Monitoring & Blocking Permissions",
+                            text = "Privacy-First Focus Guard",
                             fontFamily = SpaceGroteskFontFamily,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             color = VisionColors.DistractionOnSurface
                         )
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Usage Access: ${if (hasUsageAccess) "Granted" else "Not Granted"}",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp,
-                                color = VisionColors.DistractionOnSurface
-                            )
-                            Text(
-                                text = "Required by Android UsageStatsManager to read real app screen time.",
-                                fontSize = 11.sp,
-                                color = VisionColors.DistractionMuted
-                            )
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                runCatching { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
-                            }
+                    Text(
+                        text = "VISION does not read your app usage history or screen content via accessibility services. All focus goals, timers, and distraction limits stay strictly private on your device.",
+                        fontSize = 12.sp,
+                        color = VisionColors.DistractionMuted
+                    )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(if (hasUsageAccess) "Manage" else "Grant", color = VisionColors.DistractionPrimary, fontSize = 12.sp)
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Focus Guard Accessibility: ${if (isAccessibilityEnabled) "Active" else "Optional"}",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp,
-                                color = VisionColors.DistractionOnSurface
-                            )
-                            Text(
-                                text = "Displays Focus Shield automatically if a blocked app is opened.",
-                                fontSize = 11.sp,
-                                color = VisionColors.DistractionMuted
-                            )
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Focus Timer Alerts: ${if (hasNotifPermission) "Allowed" else "Permission Needed"}",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                    color = VisionColors.DistractionOnSurface
+                                )
+                                Text(
+                                    text = "Used only to display your active focus countdown and completion alerts.",
+                                    fontSize = 11.sp,
+                                    color = VisionColors.DistractionMuted
+                                )
                             }
-                        ) {
-                            Text(if (isAccessibilityEnabled) "Active" else "Enable", color = VisionColors.DistractionPrimary, fontSize = 12.sp)
+                            if (!hasNotifPermission) {
+                                OutlinedButton(
+                                    onClick = { notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                                ) {
+                                    Text("Allow", color = VisionColors.DistractionPrimary, fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Automatic Blocking Settings
+        // Automatic Focus Shield Settings
         item {
             Surface(
                 color = VisionColors.DistractionSurfaceElevated,
@@ -464,8 +467,8 @@ fun DistractionScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Automatic Blocking Rules", fontWeight = FontWeight.Bold, color = VisionColors.DistractionOnSurface)
-                            Text("Restrict selected apps when Focus Mode runs", fontSize = 12.sp, color = VisionColors.DistractionMuted)
+                            Text("Focus Shield Reminders", fontWeight = FontWeight.Bold, color = VisionColors.DistractionOnSurface)
+                            Text("Engage Focus Shield overlay after grace period expires", fontSize = 12.sp, color = VisionColors.DistractionMuted)
                         }
                         Switch(
                             checked = settings.autoBlockEnabled,
@@ -474,7 +477,7 @@ fun DistractionScreen(
                         )
                     }
                     Text(
-                        text = "Configured Blocking Duration: ${settings.blockingDurationMinutes} min",
+                        text = "Configured Focus Goal Duration: ${settings.blockingDurationMinutes} min",
                         fontSize = 12.sp,
                         color = VisionColors.DistractionOnSurface
                     )
@@ -507,7 +510,7 @@ fun DistractionScreen(
                 ) {
                     StatCell("Focus Today", "${totalFocusMins}m", VisionColors.DistractionPrimary)
                     StatCell("Warnings", "$warningsToday", VisionColors.DistractionWarning)
-                    StatCell("Blocks", "$blocksToday", VisionColors.DistractionPrimary)
+                    StatCell("Shields", "$blocksToday", VisionColors.DistractionPrimary)
                     StatCell("Sessions", "${focusSessions.size}", VisionColors.DistractionOnSurface)
                 }
             }
@@ -515,17 +518,35 @@ fun DistractionScreen(
 
         // Selected Distracting Applications
         item {
-            Text(
-                text = "Monitored & Selected Distracting Apps",
-                fontFamily = SpaceGroteskFontFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 17.sp,
-                color = VisionColors.DistractionOnSurface
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Distraction Guard List",
+                    fontFamily = SpaceGroteskFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = VisionColors.DistractionOnSurface
+                )
+                OutlinedButton(
+                    onClick = { showAddAppDialog = true },
+                    border = BorderStroke(1.dp, VisionColors.DistractionPrimary)
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "Add distracting app",
+                        tint = VisionColors.DistractionPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add App", color = VisionColors.DistractionPrimary, fontSize = 12.sp)
+                }
+            }
         }
 
-        items(distractingApps.take(25), key = { it.packageName }) { app ->
-            val usedMins = appUsageMinutes[app.packageName] ?: 0
+        items(distractingApps, key = { it.packageName }) { app ->
             Surface(
                 color = VisionColors.DistractionSurfaceElevated,
                 shape = RoundedCornerShape(14.dp),
@@ -569,10 +590,10 @@ fun DistractionScreen(
                             }
                         }
                         Text(
-                            text = if (hasUsageAccess) {
-                                "Used today: ${usedMins}m • Limit: ${app.dailyLimitMinutes}m"
+                            text = if (app.isYouTubeSpecial) {
+                                "Daily limit: ${app.dailyLimitMinutes}m • Educational use allowed in Study Mode"
                             } else {
-                                "Limit: ${app.dailyLimitMinutes}m (Grant Usage Access to view live screen time)"
+                                "Daily self-limit: ${app.dailyLimitMinutes}m during focus hours"
                             },
                             fontSize = 11.sp,
                             color = VisionColors.DistractionMuted
@@ -584,6 +605,63 @@ fun DistractionScreen(
 
         item { Spacer(modifier = Modifier.height(12.dp)) }
     }
+
+    if (showAddAppDialog) {
+        AddDistractingAppDialog(
+            onDismiss = { showAddAppDialog = false },
+            onAdd = { name, limit ->
+                onAddCustomApp(name, limit)
+                showAddAppDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddDistractingAppDialog(
+    onDismiss: () -> Unit,
+    onAdd: (String, Int) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var limit by remember { mutableStateOf("20") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add App or Site to Guard", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("App or platform name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = limit,
+                    onValueChange = { limit = it.filter { ch -> ch.isDigit() } },
+                    label = { Text("Daily limit (minutes)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val mins = limit.toIntOrNull()?.coerceIn(5, 240) ?: 20
+                    if (name.isNotBlank()) onAdd(name.trim(), mins)
+                },
+                enabled = name.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = VisionColors.DistractionPrimary)
+            ) {
+                Text("Add", color = Color.White)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable

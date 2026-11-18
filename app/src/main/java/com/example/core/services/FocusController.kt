@@ -1,14 +1,8 @@
 package com.example.core.services
 
-import android.app.AppOpsManager
-import android.app.usage.UsageStatsManager
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
-import android.os.Process
-import android.provider.Settings
-import androidx.core.content.ContextCompat
 import com.example.core.util.DateUtil
 import com.example.data.local.DailyStatEntity
 import com.example.data.local.DistractingAppEntity
@@ -16,17 +10,36 @@ import com.example.data.local.FocusDao
 import com.example.data.local.FocusSessionEntity
 import com.example.data.local.FocusSessionStatus
 import com.example.data.preferences.VisionPreferences
-import com.example.services.FocusAccessibilityService
-import com.example.services.FocusMonitorService
+import com.example.services.FocusCompletionWorker
+import com.example.services.FocusShieldActivity
+import com.example.services.NotificationDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 class FocusController(
     private val context: Context,
     private val focusDao: FocusDao,
     private val preferences: VisionPreferences
 ) : FocusManagerContract {
+
+    private val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val sessionMutex = Mutex()
+    private val dispatcher by lazy { NotificationDispatcher(context) }
+
+    private var timerJob: Job? = null
+    private var warningGraceCountdown: Int = 0
+    private var warningAppName: String? = null
+    private var warningPackageName: String? = null
 
     override fun observeDistractingApps(): Flow<List<DistractingAppEntity>> =
         focusDao.observeDistractingApps()
@@ -45,33 +58,27 @@ class FocusController(
         focusDao.updateAppDailyLimit(packageName, minutes.coerceIn(5, 240))
     }
 
+    override suspend fun addCustomDistractingApp(appName: String, dailyLimitMinutes: Int) {
+        val cleanName = appName.trim()
+        if (cleanName.isBlank()) return
+        val slug = cleanName.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), ".").trim('.')
+        val pkg = "custom.distraction.$slug"
+        focusDao.insertDistractingAppsIgnore(
+            listOf(
+                DistractingAppEntity(
+                    packageName = pkg,
+                    appName = cleanName,
+                    dailyLimitMinutes = dailyLimitMinutes.coerceIn(5, 240),
+                    isSelectedForBlocking = true,
+                    isYouTubeSpecial = cleanName.contains("youtube", ignoreCase = true)
+                )
+            )
+        )
+    }
+
     override suspend fun refreshInstalledApps() {
         withContext(Dispatchers.IO) {
-            val pm = context.packageManager
-            val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                pm.queryIntentActivities(launcherIntent, PackageManager.ResolveInfoFlags.of(0))
-            } else {
-                @Suppress("DEPRECATION")
-                pm.queryIntentActivities(launcherIntent, 0)
-            }
-            val apps = resolved
-                .mapNotNull { info ->
-                    val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
-                    if (pkg == context.packageName) return@mapNotNull null
-                    val label = info.loadLabel(pm)?.toString()?.takeIf { it.isNotBlank() } ?: pkg
-                    val isYt = pkg == "com.google.android.youtube" || pkg.contains("youtube")
-                    DistractingAppEntity(
-                        packageName = pkg,
-                        appName = label,
-                        dailyLimitMinutes = if (isYt) 45 else 30,
-                        isSelectedForBlocking = isYt || isCommonSocialPackage(pkg),
-                        isYouTubeSpecial = isYt
-                    )
-                }
-                .distinctBy { it.packageName }
-
-            val curatedDefaults = listOf(
+            val curatedCatalog = listOf(
                 DistractingAppEntity(
                     packageName = "com.google.android.youtube",
                     appName = "YouTube",
@@ -83,7 +90,7 @@ class FocusController(
                     packageName = "com.instagram.android",
                     appName = "Instagram",
                     dailyLimitMinutes = 20,
-                    isSelectedForBlocking = false,
+                    isSelectedForBlocking = true,
                     isYouTubeSpecial = false
                 ),
                 DistractingAppEntity(
@@ -92,163 +99,243 @@ class FocusController(
                     dailyLimitMinutes = 15,
                     isSelectedForBlocking = false,
                     isYouTubeSpecial = false
+                ),
+                DistractingAppEntity(
+                    packageName = "com.twitter.android",
+                    appName = "X (Twitter)",
+                    dailyLimitMinutes = 20,
+                    isSelectedForBlocking = false,
+                    isYouTubeSpecial = false
+                ),
+                DistractingAppEntity(
+                    packageName = "com.reddit.frontpage",
+                    appName = "Reddit",
+                    dailyLimitMinutes = 25,
+                    isSelectedForBlocking = false,
+                    isYouTubeSpecial = false
+                ),
+                DistractingAppEntity(
+                    packageName = "com.facebook.katana",
+                    appName = "Facebook",
+                    dailyLimitMinutes = 20,
+                    isSelectedForBlocking = false,
+                    isYouTubeSpecial = false
+                ),
+                DistractingAppEntity(
+                    packageName = "com.discord",
+                    appName = "Discord",
+                    dailyLimitMinutes = 30,
+                    isSelectedForBlocking = false,
+                    isYouTubeSpecial = false
+                ),
+                DistractingAppEntity(
+                    packageName = "com.netflix.mediaclient",
+                    appName = "Netflix",
+                    dailyLimitMinutes = 45,
+                    isSelectedForBlocking = false,
+                    isYouTubeSpecial = false
                 )
             )
-            focusDao.insertDistractingAppsIgnore((apps + curatedDefaults).distinctBy { it.packageName })
+            focusDao.insertDistractingAppsIgnore(curatedCatalog)
+        }
+    }
+
+    suspend fun resumeIfActive() {
+        val settings = preferences.getSettingsOnce()
+        if (!settings.activeFocusRunning) return
+        val now = System.currentTimeMillis()
+        val remainingSec = ((settings.activeFocusEndEpochMillis - now) / 1000L).toInt()
+        if (remainingSec <= 0) {
+            stopFocusSession(completedNormally = true)
+        } else {
+            val running = focusDao.getRunningSession()
+            val totalSec = ((running?.plannedDurationMinutes ?: 25) * 60).coerceAtLeast(remainingSec)
+            launchCountdownLoop(totalSec, settings.activeFocusEndEpochMillis, settings.studyModeEnabled)
         }
     }
 
     override suspend fun startFocusSession(durationMinutes: Int, studyMode: Boolean) {
-        val safeDuration = durationMinutes.coerceIn(1, 240)
-        preferences.setStudyMode(studyMode)
-        val settings = preferences.getSettingsOnce()
-        val now = System.currentTimeMillis()
-        val existingRunning = focusDao.getRunningSession()
-        if (existingRunning != null) {
-            focusDao.updateFocusSession(
-                existingRunning.copy(
-                    status = FocusSessionStatus.CANCELLED,
-                    endedAtMillis = now
+        sessionMutex.withLock {
+            val safeDuration = durationMinutes.coerceIn(1, 240)
+            preferences.setStudyMode(studyMode)
+            val settings = preferences.getSettingsOnce()
+            val now = System.currentTimeMillis()
+
+            val existingRunning = focusDao.getRunningSession()
+            if (existingRunning != null) {
+                focusDao.updateFocusSession(
+                    existingRunning.copy(
+                        status = FocusSessionStatus.CANCELLED,
+                        endedAtMillis = now
+                    )
+                )
+            }
+
+            val sessionId = focusDao.insertFocusSession(
+                FocusSessionEntity(
+                    startedAtMillis = now,
+                    plannedDurationMinutes = safeDuration,
+                    isStudyMode = studyMode,
+                    gracePeriodSeconds = settings.studyGracePeriodSeconds,
+                    status = FocusSessionStatus.RUNNING
                 )
             )
-        }
-        val sessionId = focusDao.insertFocusSession(
-            FocusSessionEntity(
-                startedAtMillis = now,
-                plannedDurationMinutes = safeDuration,
-                isStudyMode = studyMode,
-                gracePeriodSeconds = settings.studyGracePeriodSeconds,
-                status = FocusSessionStatus.RUNNING
-            )
-        )
-        val endMillis = now + safeDuration * 60_000L
-        preferences.setActiveFocusState(running = true, endEpochMillis = endMillis, sessionId = sessionId)
+            val endMillis = now + safeDuration * 60_000L
+            preferences.setActiveFocusState(running = true, endEpochMillis = endMillis, sessionId = sessionId)
+            warningGraceCountdown = 0
+            warningAppName = null
+            warningPackageName = null
 
-        val serviceIntent = Intent(context, FocusMonitorService::class.java).apply {
-            action = FocusMonitorService.ACTION_START_FOCUS
-            putExtra(FocusMonitorService.EXTRA_SESSION_ID, sessionId)
-            putExtra(FocusMonitorService.EXTRA_DURATION_MINUTES, safeDuration)
-            putExtra(FocusMonitorService.EXTRA_STUDY_MODE, studyMode)
+            FocusCompletionWorker.schedule(context, safeDuration)
+            launchCountdownLoop(safeDuration * 60, endMillis, studyMode)
         }
-        ContextCompat.startForegroundService(context, serviceIntent)
     }
 
     override suspend fun stopFocusSession(completedNormally: Boolean) {
-        val running = focusDao.getRunningSession()
-        val now = System.currentTimeMillis()
-        if (running != null) {
-            val elapsedSeconds = ((now - running.startedAtMillis) / 1000L).toInt().coerceAtLeast(0)
-            focusDao.updateFocusSession(
-                running.copy(
-                    endedAtMillis = now,
-                    actualDurationSeconds = elapsedSeconds,
-                    status = if (completedNormally) FocusSessionStatus.COMPLETED else FocusSessionStatus.CANCELLED
+        sessionMutex.withLock {
+            timerJob?.cancel()
+            timerJob = null
+            warningGraceCountdown = 0
+            warningAppName = null
+            warningPackageName = null
+            FocusCompletionWorker.cancel(context)
+
+            val running = focusDao.getRunningSession()
+            val now = System.currentTimeMillis()
+            if (running != null) {
+                val elapsedSeconds = ((now - running.startedAtMillis) / 1000L).toInt().coerceAtLeast(0)
+                focusDao.updateFocusSession(
+                    running.copy(
+                        endedAtMillis = now,
+                        actualDurationSeconds = elapsedSeconds,
+                        status = if (completedNormally) FocusSessionStatus.COMPLETED else FocusSessionStatus.CANCELLED
+                    )
                 )
+                val today = DateUtil.todayEpochDay()
+                val stat = focusDao.getDailyStatOnce(today) ?: DailyStatEntity(epochDay = today)
+                val addedMinutes = (elapsedSeconds / 60).coerceAtLeast(
+                    if (completedNormally) running.plannedDurationMinutes else 0
+                )
+                focusDao.upsertDailyStat(stat.copy(focusMinutes = stat.focusMinutes + addedMinutes))
+            }
+
+            preferences.setActiveFocusState(running = false, endEpochMillis = 0L, sessionId = 0L)
+            AlfredEventBus.updateFocusRuntime(FocusRuntimeSnapshot(isRunning = false))
+            cancelFocusNotification()
+
+            if (completedNormally) {
+                val msg = "Focus session complete, Master. Well done."
+                dispatcher.postScheduleNotification("VISION Focus Complete", msg)
+                AlfredEventBus.emitAnnouncement(msg)
+            }
+        }
+    }
+
+    suspend fun triggerStudyWarningCheck(appName: String, isYouTube: Boolean) {
+        val settings = preferences.getSettingsOnce()
+        val grace = settings.studyGracePeriodSeconds
+        val pkg = if (isYouTube) "com.google.android.youtube" else "custom.distraction.app"
+        warningPackageName = pkg
+        warningAppName = appName
+        warningGraceCountdown = grace
+
+        preferences.setPendingGrace(pkg, System.currentTimeMillis() + grace * 1000L)
+        dispatcher.postWarningNotification(appName, grace, isYouTube)
+
+        val spokenWarning = if (isYouTube) {
+            "Master, please keep YouTube strictly for educational study or return to your task within $grace seconds."
+        } else {
+            "Reminder: $appName is on your distraction list. Return to your focus task within $grace seconds."
+        }
+        AlfredEventBus.emitAnnouncement(spokenWarning)
+
+        val session = focusDao.getRunningSession()
+        if (session != null) {
+            focusDao.updateFocusSession(session.copy(warningsIssued = session.warningsIssued + 1))
+        }
+        val today = DateUtil.todayEpochDay()
+        val stat = focusDao.getDailyStatOnce(today) ?: DailyStatEntity(epochDay = today)
+        focusDao.upsertDailyStat(stat.copy(studyWarningsCount = stat.studyWarningsCount + 1))
+    }
+
+    private fun launchCountdownLoop(totalSeconds: Int, endEpochMillis: Long, studyMode: Boolean) {
+        timerJob?.cancel()
+        timerJob = controllerScope.launch {
+            while (isActive) {
+                val remaining = ((endEpochMillis - System.currentTimeMillis()) / 1000L).toInt().coerceAtLeast(0)
+                AlfredEventBus.updateFocusRuntime(
+                    FocusRuntimeSnapshot(
+                        isRunning = true,
+                        remainingSeconds = remaining,
+                        totalSeconds = totalSeconds,
+                        isStudyMode = studyMode,
+                        activeWarningAppName = warningAppName,
+                        graceRemainingSeconds = warningGraceCountdown
+                    )
+                )
+
+                postOrUpdateFocusNotification(
+                    DateUtil.formatDurationSeconds(remaining),
+                    studyMode
+                )
+
+                if (remaining <= 0) {
+                    stopFocusSession(completedNormally = true)
+                    break
+                }
+
+                if (warningGraceCountdown > 0) {
+                    warningGraceCountdown -= 1
+                    if (warningGraceCountdown == 0 && warningAppName != null) {
+                        val settings = preferences.getSettingsOnce()
+                        if (settings.autoBlockEnabled) {
+                            applyFocusShield(
+                                appName = warningAppName ?: "Distracting App",
+                                pkg = warningPackageName ?: ""
+                            )
+                        }
+                        warningAppName = null
+                        warningPackageName = null
+                    }
+                }
+
+                delay(1000L)
+            }
+        }
+    }
+
+    private suspend fun applyFocusShield(appName: String, pkg: String) {
+        val session = focusDao.getRunningSession()
+        if (session != null) {
+            focusDao.updateFocusSession(session.copy(blocksTriggered = session.blocksTriggered + 1))
+        }
+        val today = DateUtil.todayEpochDay()
+        val stat = focusDao.getDailyStatOnce(today) ?: DailyStatEntity(epochDay = today)
+        focusDao.upsertDailyStat(stat.copy(blocksCount = stat.blocksCount + 1))
+
+        val shieldIntent = Intent(context, FocusShieldActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra(FocusShieldActivity.EXTRA_BLOCKED_APP_NAME, appName)
+            putExtra(FocusShieldActivity.EXTRA_BLOCKED_PKG, pkg)
+        }
+        runCatching { context.startActivity(shieldIntent) }
+    }
+
+    private fun postOrUpdateFocusNotification(remainingFormatted: String, isStudyMode: Boolean) {
+        if (!dispatcher.hasNotificationPermission()) return
+        runCatching {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(
+                NotificationDispatcher.NOTIF_ID_FOCUS,
+                dispatcher.buildFocusOngoingNotification(remainingFormatted, isStudyMode)
             )
-            val today = DateUtil.todayEpochDay()
-            val stat = focusDao.getDailyStatOnce(today) ?: DailyStatEntity(epochDay = today)
-            val addedMinutes = (elapsedSeconds / 60).coerceAtLeast(if (completedNormally) running.plannedDurationMinutes else 0)
-            focusDao.upsertDailyStat(stat.copy(focusMinutes = stat.focusMinutes + addedMinutes))
-        }
-        preferences.setActiveFocusState(running = false, endEpochMillis = 0L, sessionId = 0L)
-        val stopIntent = Intent(context, FocusMonitorService::class.java).apply {
-            action = FocusMonitorService.ACTION_STOP_FOCUS
-        }
-        runCatching { context.stopService(stopIntent) }
-    }
-
-    override fun hasUsageAccessPermission(): Boolean {
-        return try {
-            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                appOps.unsafeCheckOpNoThrow(
-                    AppOpsManager.OPSTR_GET_USAGE_STATS,
-                    Process.myUid(),
-                    context.packageName
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                appOps.checkOpNoThrow(
-                    AppOpsManager.OPSTR_GET_USAGE_STATS,
-                    Process.myUid(),
-                    context.packageName
-                )
-            }
-            mode == AppOpsManager.MODE_ALLOWED
-        } catch (_: Exception) {
-            false
         }
     }
 
-    override fun isAccessibilityGuardEnabled(): Boolean {
-        if (FocusAccessibilityService.isServiceConnected) return true
-        return try {
-            val enabledServices = Settings.Secure.getString(
-                context.contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            ).orEmpty()
-            val expected = "${context.packageName}/${FocusAccessibilityService::class.java.name}"
-            enabledServices.contains(expected) || enabledServices.contains(FocusAccessibilityService::class.java.simpleName)
-        } catch (_: Exception) {
-            false
+    private fun cancelFocusNotification() {
+        runCatching {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(NotificationDispatcher.NOTIF_ID_FOCUS)
         }
-    }
-
-    override fun queryTodayAppUsageMinutes(): Map<String, Int> {
-        if (!hasUsageAccessPermission()) return emptyMap()
-        return try {
-            val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-            val start = DateUtil.epochDayToStartMillis(DateUtil.todayEpochDay())
-            val end = System.currentTimeMillis()
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, start, end)
-            val result = mutableMapOf<String, Int>()
-            stats?.forEach { usage ->
-                val minutes = (usage.totalTimeInForeground / 60_000L).toInt()
-                if (minutes > 0) {
-                    result[usage.packageName] = (result[usage.packageName] ?: 0) + minutes
-                }
-            }
-            result
-        } catch (_: Exception) {
-            emptyMap()
-        }
-    }
-
-    fun queryForegroundPackageName(): String? {
-        if (!hasUsageAccessPermission()) return null
-        return try {
-            val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-            val end = System.currentTimeMillis()
-            val begin = end - 15_000L
-            val events = usm.queryEvents(begin, end)
-            val event = android.app.usage.UsageEvents.Event()
-            var lastPkg: String? = null
-            while (events.hasNextEvent()) {
-                events.getNextEvent(event)
-                @Suppress("DEPRECATION")
-                val isForegroundEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED
-                } else {
-                    event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND
-                }
-                if (isForegroundEvent) {
-                    lastPkg = event.packageName
-                }
-            }
-            lastPkg
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun isCommonSocialPackage(pkg: String): Boolean {
-        val lower = pkg.lowercase()
-        return lower.contains("instagram") ||
-            lower.contains("tiktok") ||
-            lower.contains("musically") ||
-            lower.contains("facebook") ||
-            lower.contains("reddit") ||
-            lower.contains("twitter") ||
-            lower.contains("snapchat")
     }
 }

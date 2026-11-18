@@ -101,12 +101,10 @@ interface FocusManagerContract {
     fun observeDailyStats(): Flow<List<DailyStatEntity>>
     suspend fun toggleAppBlocked(packageName: String, selected: Boolean)
     suspend fun updateAppDailyLimit(packageName: String, minutes: Int)
+    suspend fun addCustomDistractingApp(appName: String, dailyLimitMinutes: Int)
     suspend fun refreshInstalledApps()
     suspend fun startFocusSession(durationMinutes: Int, studyMode: Boolean)
     suspend fun stopFocusSession(completedNormally: Boolean)
-    fun hasUsageAccessPermission(): Boolean
-    fun isAccessibilityGuardEnabled(): Boolean
-    fun queryTodayAppUsageMinutes(): Map<String, Int>
 }
 
 interface ProductivityAnalyzer {
